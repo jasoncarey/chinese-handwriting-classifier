@@ -11,4 +11,8 @@ We use GB2312 encoding for Chinese characters, where each is represented by a pa
 | Model Type    | Model Config                              | Epochs | Accuracy |
 | ------------- | ----------------------------------------- | ------ | -------- |
 | CNN           | 3 convolutional, 2 fully connected layers | 10     | 83.00%   |
-| a             | a                                         | a      | a        |
+| a             | a                                         | a      | 87.11%   |
+
+# TODO: 
+- visualisation
+- try wandb
