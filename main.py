@@ -269,7 +269,7 @@ if __name__ == "__main__":
     }
 
     sweep_id = wandb.sweep(sweep_config, project="Chinese-Handwriting-Recognition")
-    wandb.agent(sweep_id, function=train_model, count=10)
+    wandb.agent(sweep_id, function=train_model)
 
     wandb.finish()
 

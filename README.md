@@ -16,3 +16,5 @@ We use GB2312 encoding for Chinese characters, where each is represented by a pa
 # TODO: 
 - visualisation
 - try wandb
+- padding should be kernel_size - 1
+- transfer learning
