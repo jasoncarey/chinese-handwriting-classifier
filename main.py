@@ -11,6 +11,8 @@ import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 from fastai.vision.all import *
 import matplotlib.pyplot as plt
+import wandb
+import gc
 
 # %matplotlib inline
 
@@ -102,20 +104,23 @@ class HWDBDataset(Dataset):
         return image, label
 
 
-def get_dataloader(gnt_files, batch_size=32, shuffle=True):
+def get_dataloader(gnt_files, shuffle=True, config=None):
+    batch_size = config["batch_size"]
     dataset = HWDBDataset(gnt_files)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return dataloader
 
 
 class Network(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, config=None):
         """
         Divide network into 5 blocks of layers
         4 blocks of Conv + BatchNorm + ReLU + Pooling
         1 block of fully connected layers
         """
         super(Network, self).__init__()
+
+        self.config = config
 
         self.conv1 = nn.Conv2d(1, 32, kernel_size=5, padding=2)
         self.bn1 = nn.BatchNorm2d(32)
@@ -139,12 +144,11 @@ class Network(nn.Module):
         self.bn7 = nn.BatchNorm2d(512)
         self.conv8 = nn.Conv2d(512, 512, kernel_size=5, padding=2)
         self.bn8 = nn.BatchNorm2d(512)
-        # self.pool4 = nn.MaxPool2d(2, 2)
 
         self.fc1 = nn.Linear(256 * 1 * 1, 1024)
-        self.dropout1 = nn.Dropout(0.5)
+        self.dropout1 = nn.Dropout(p=self.config["dropout"])
         self.fc2 = nn.Linear(1024, 512)
-        self.dropout2 = nn.Dropout(0.5)
+        self.dropout2 = nn.Dropout(p=self.config["dropout"])
         self.fc3 = nn.Linear(512, num_classes)
 
     def forward(self, x):
@@ -156,11 +160,6 @@ class Network(nn.Module):
 
         x = self.pool3(F.relu(self.bn5(self.conv5(x))))
         x = self.pool3(F.relu(self.bn6(self.conv6(x))))
-
-        # print(x.shape)
-
-        # x = self.pool4(F.relu(self.bn7(self.conv7(x))))
-        # x = self.pool4(F.relu(self.bn8(self.conv8(x))))
 
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
@@ -199,35 +198,80 @@ def train(model, train_loader, test_loader, criterion, optimizer, num_epochs=10)
         val_accuracy = 100 * correct / total
         print(f"Validation Accuracy after Epoch {epoch + 1}: {val_accuracy}%")
 
+        wandb.log(
+            {
+                "Epoch": epoch + 1,
+                "Loss": running_loss / len(train_loader),
+                "Accuracy": val_accuracy,
+            }
+        )
+
+
+def train_model(config=None):
+    with wandb.init(config=config):
+        config = wandb.config
+        train_files = list(Path("./data/train").rglob("*.gnt"))
+        test_files = list(Path("./data/test").rglob("*.gnt"))
+        train_dataset = HWDBDataset(train_files)
+        train_loader = DataLoader(
+            train_dataset, batch_size=config["batch_size"], shuffle=True, drop_last=True
+        )
+        test_dataset = HWDBDataset(test_files)
+        test_loader = DataLoader(
+            test_dataset, batch_size=config["batch_size"], shuffle=True, drop_last=True
+        )
+        num_classes = len(train_dataset.label_encoder.classes_)
+        dls = DataLoaders(train_loader, test_loader)
+        model = Network(num_classes=num_classes, config=config).to(device)
+        wandb.watch(model, log="all")
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
+        train(
+            model,
+            train_loader,
+            test_loader,
+            criterion,
+            optimizer,
+            num_epochs=config["epochs"],
+        )
+        torch.save(model.state_dict(), "model.pth")
+
+        torch.mps.empty_cache()
+        gc.collect()
+
 
 if __name__ == "__main__":
-    train_files = list(Path("./data/train").rglob("*.gnt"))
-    test_files = list(Path("./data/test").rglob("*.gnt"))
 
-    train_dataset = HWDBDataset(train_files)
-    train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, drop_last=True
-    )
+    # wandb.init(
+    #    project="Chinese-Handwriting-Recognition",
+    #    config={
+    #        "learning_rate": 0.0001,
+    #        "architecture": "CNN",
+    #        "dataset": "HWDB",
+    #        "epochs": 10,
+    #        "batch_size": 32,
+    #    },
+    # )
 
-    test_dataset = HWDBDataset(test_files)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=True, drop_last=True)
+    sweep_config = {
+        "method": "bayes",
+        "metric": {
+            "name": "Accuracy",
+            "goal": "maximize",
+        },
+        "parameters": {
+            "learning_rate": {"values": [0.0001, 0.001, 0.01]},
+            "batch_size": {"values": [32, 64]},
+            "epochs": {"values": [10]},
+            "dropout": {"values": [0.1, 0.3, 0.5, 0.7]},
+            "architecture": {"values": ["CNN"]},
+        },
+    }
 
-    num_classes = len(train_dataset.label_encoder.classes_)
+    sweep_id = wandb.sweep(sweep_config, project="Chinese-Handwriting-Recognition")
+    wandb.agent(sweep_id, function=train_model, count=10)
 
-    dls = DataLoaders(train_loader, test_loader)
-
-    model = Network(num_classes=num_classes).to(device)
-
-    # learn = Learner(dls, model, loss_func=CrossEntropyLossFlat(), metrics=accuracy)
-    # learn.lr_find()
-    # learn.recorder.plot_lr_find()
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
-
-    train(model, train_loader, test_loader, criterion, optimizer, num_epochs=10)
-
-    torch.save(model.state_dict(), "model.pth")
+    wandb.finish()
 
     # for i in range(10):
     #    image, label = train_dataset[i]
